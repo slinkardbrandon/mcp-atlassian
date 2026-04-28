@@ -531,6 +531,110 @@ class TestMarkdownToAdf:
         types = [n["type"] for n in result["content"]]
         assert types == ["paragraph", "expand", "paragraph"]
 
+    # -- Panel blocks -------------------------------------------------------
+
+    def test_info_panel(self):
+        """Info panel produces a panel node with panelType info."""
+        md = "{info}\nSome info text\n{info}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        assert panel["attrs"]["panelType"] == "info"
+
+    def test_note_panel(self):
+        """Note panel produces a panel node with panelType note."""
+        md = "{note}\nSome note\n{note}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        assert panel["attrs"]["panelType"] == "note"
+
+    def test_warning_panel(self):
+        """Warning panel produces a panel node with panelType warning."""
+        md = "{warning}\nDanger ahead\n{warning}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        assert panel["attrs"]["panelType"] == "warning"
+
+    def test_error_panel(self):
+        """Error panel produces a panel node with panelType error."""
+        md = "{error}\nSomething broke\n{error}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        assert panel["attrs"]["panelType"] == "error"
+
+    def test_success_panel(self):
+        """Success panel produces a panel node with panelType success."""
+        md = "{success}\nAll good\n{success}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        assert panel["attrs"]["panelType"] == "success"
+
+    def test_panel_with_title(self):
+        """Panel with title prepends a bold paragraph."""
+        md = "{info:title=Important}\nDetails here\n{info}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        assert panel["attrs"]["panelType"] == "info"
+        # First content node should be the bold title
+        title_para = panel["content"][0]
+        assert title_para["type"] == "paragraph"
+        assert title_para["content"][0]["marks"][0]["type"] == "strong"
+        assert title_para["content"][0]["text"] == "Important"
+
+    def test_panel_with_nested_content(self):
+        """Panel recursively parses inner markdown."""
+        md = "{note}\n## Heading\n* item one\n* item two\n{note}"
+        result = markdown_to_adf(md)
+        panel = next(n for n in result["content"] if n["type"] == "panel")
+        inner_types = [n["type"] for n in panel["content"]]
+        assert "heading" in inner_types
+        assert "bulletList" in inner_types
+
+    def test_panel_preserves_surrounding_content(self):
+        """Content before and after panel is preserved."""
+        md = "Before\n{info}\nInside\n{info}\nAfter"
+        result = markdown_to_adf(md)
+        types = [n["type"] for n in result["content"]]
+        assert types == ["paragraph", "panel", "paragraph"]
+
+    # -- Status lozenges ----------------------------------------------------
+
+    def test_status_inline(self):
+        """Status lozenge renders as an ADF status node."""
+        md = "This is {status:color=green|title=Done} now"
+        result = markdown_to_adf(md)
+        para = result["content"][0]
+        status_nodes = [n for n in para["content"] if n.get("type") == "status"]
+        assert len(status_nodes) == 1
+        assert status_nodes[0]["attrs"]["text"] == "Done"
+        assert status_nodes[0]["attrs"]["color"] == "green"
+
+    def test_status_no_color(self):
+        """Status without color defaults to neutral."""
+        md = "Item is {status:title=Pending}"
+        result = markdown_to_adf(md)
+        para = result["content"][0]
+        status_nodes = [n for n in para["content"] if n.get("type") == "status"]
+        assert len(status_nodes) == 1
+        assert status_nodes[0]["attrs"]["color"] == "neutral"
+
+    def test_status_invalid_color(self):
+        """Status with invalid color falls back to neutral."""
+        md = "Item is {status:color=pink|title=Weird}"
+        result = markdown_to_adf(md)
+        para = result["content"][0]
+        status_nodes = [n for n in para["content"] if n.get("type") == "status"]
+        assert status_nodes[0]["attrs"]["color"] == "neutral"
+
+    def test_multiple_statuses(self):
+        """Multiple status lozenges in one line."""
+        md = "{status:color=green|title=Pass} and {status:color=red|title=Fail}"
+        result = markdown_to_adf(md)
+        para = result["content"][0]
+        status_nodes = [n for n in para["content"] if n.get("type") == "status"]
+        assert len(status_nodes) == 2
+        assert status_nodes[0]["attrs"]["text"] == "Pass"
+        assert status_nodes[1]["attrs"]["text"] == "Fail"
+
     # -- Mixed formatting ---------------------------------------------------
 
     def test_mixed_formatting(self):

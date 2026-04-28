@@ -27,6 +27,33 @@ def _parse_inline_formatting(text: str) -> list[dict[str, Any]]:
 
     nodes: list[dict[str, Any]] = []
     # Pattern order matters: bold before italic, code before others
+    # Status lozenges are checked first via a pre-pass since they are
+    # self-contained inline nodes (not marks on text).
+    _status_re = re.compile(
+        r"\{status:(?:color=(?P<color>\w+)\|)?title=(?P<title>[^}]+)\}"
+    )
+    _valid_status_colors = {"neutral", "purple", "blue", "red", "yellow", "green"}
+
+    # Pre-process: replace status lozenges with placeholders and collect them
+    status_placeholders: dict[str, dict[str, Any]] = {}
+    placeholder_idx = 0
+
+    def _status_replacer(m: re.Match) -> str:  # type: ignore[type-arg]
+        nonlocal placeholder_idx
+        color = m.group("color") or "neutral"
+        if color not in _valid_status_colors:
+            color = "neutral"
+        title = m.group("title")
+        key = f"\x00STATUS{placeholder_idx}\x00"
+        status_placeholders[key] = {
+            "type": "status",
+            "attrs": {"text": title, "color": color, "style": ""},
+        }
+        placeholder_idx += 1
+        return key
+
+    text = _status_re.sub(_status_replacer, text)
+
     inline_re = re.compile(
         r"`(?P<code_inner>[^`]+)`"
         r"|\*\*(?P<bold_inner>.+?)\*\*"
@@ -101,6 +128,26 @@ def _parse_inline_formatting(text: str) -> list[dict[str, Any]]:
     if not nodes and text:
         nodes.append({"type": "text", "text": text})
 
+    # Post-process: expand status placeholders into ADF status nodes
+    if status_placeholders:
+        expanded: list[dict[str, Any]] = []
+        for node in nodes:
+            if node.get("type") == "text" and "\x00STATUS" in node.get("text", ""):
+                # Split text around placeholders
+                parts = re.split(r"(\x00STATUS\d+\x00)", node["text"])
+                marks = node.get("marks")
+                for part in parts:
+                    if part in status_placeholders:
+                        expanded.append(status_placeholders[part])
+                    elif part:
+                        n: dict[str, Any] = {"type": "text", "text": part}
+                        if marks:
+                            n["marks"] = marks
+                        expanded.append(n)
+            else:
+                expanded.append(node)
+        nodes = expanded
+
     return nodes
 
 
@@ -162,6 +209,58 @@ def markdown_to_adf(markdown_text: str) -> dict[str, Any]:
                 "content": inner_doc.get("content", []),
             }
             doc["content"].append(expand_node)
+            continue
+
+        # --- Panel blocks ({info}, {note}, {warning}, {error}, {success}) ---
+        _panel_types = ("info", "note", "warning", "error", "success", "tip")
+        panel_open = re.match(
+            r"^\{(" + "|".join(_panel_types) + r")(?::title=(.+?))?\}\s*$", line
+        )
+        if panel_open:
+            panel_type = panel_open.group(1)
+            panel_title = panel_open.group(2) or ""
+            # Map wiki markup names to ADF panelType values
+            panel_type_map = {
+                "info": "info",
+                "note": "note",
+                "warning": "warning",
+                "error": "error",
+                "success": "success",
+                "tip": "success",
+            }
+            adf_panel_type = panel_type_map.get(panel_type, "info")
+            close_re = re.compile(r"^\{" + re.escape(panel_type) + r"\}\s*$")
+            panel_lines: list[str] = []
+            i += 1
+            while i < len(lines) and not close_re.match(lines[i]):
+                panel_lines.append(lines[i])
+                i += 1
+            # Skip closing tag
+            if i < len(lines):
+                i += 1
+            # Recursively parse the inner content as ADF
+            inner_markdown = "\n".join(panel_lines)
+            inner_doc = markdown_to_adf(inner_markdown)
+            panel_content = inner_doc.get("content", [])
+            # Prepend title as a bold paragraph if provided
+            if panel_title:
+                title_para: dict[str, Any] = {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": panel_title,
+                            "marks": [{"type": "strong"}],
+                        }
+                    ],
+                }
+                panel_content = [title_para] + panel_content
+            panel_node: dict[str, Any] = {
+                "type": "panel",
+                "attrs": {"panelType": adf_panel_type},
+                "content": panel_content,
+            }
+            doc["content"].append(panel_node)
             continue
 
         # --- Fenced code block ---
